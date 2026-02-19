@@ -1,0 +1,7 @@
+# Virtual environment
+venv310/
+venv/
+
+# Model files
+*.h5
+*.keras
