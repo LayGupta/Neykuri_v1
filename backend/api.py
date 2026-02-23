@@ -9,6 +9,10 @@ Model facts (from neykuri_densenet121.ipynb):
   - Saved format : .keras (Keras 3 native)
   - Requires     : TensorFlow 2.16+ with Keras 3
 
+Schema change v1.1:
+  - Added is_synced (INTEGER DEFAULT 0) column for Supabase cloud sync
+  - 0 = not yet uploaded, 1 = successfully synced to cloud
+
 CRITICAL: Model is loaded ONCE at startup using lifespan context manager.
 """
 
@@ -50,6 +54,11 @@ def get_db() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    """
+    Create tables and indexes. Safe to run on every startup.
+    v1.1: Added is_synced column — tracks whether a record has been
+          pushed to Supabase cloud. 0 = pending, 1 = synced.
+    """
     os.makedirs(STORAGE_DIR, exist_ok=True)
     conn = get_db()
     try:
@@ -60,15 +69,28 @@ def init_db() -> None:
                 timestamp  TEXT    NOT NULL,
                 image_path TEXT    NOT NULL,
                 prediction TEXT    NOT NULL,
-                confidence REAL    NOT NULL
+                confidence REAL    NOT NULL,
+                is_synced  INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Safely add is_synced to existing databases that were created
+        # before v1.1 — ALTER TABLE is ignored if column already exists
+        try:
+            conn.execute("ALTER TABLE patient_records ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # Column already exists — safe to ignore
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_patient_timestamp
                 ON patient_records (patient_id, record_id DESC)
         """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_unsynced
+                ON patient_records (is_synced)
+                WHERE is_synced = 0
+        """)
         conn.commit()
-        print("[DB] Table 'patient_records' is ready.")
+        print("[DB] Schema v1.1 ready (patient_records + is_synced column).")
     finally:
         conn.close()
 
@@ -78,49 +100,41 @@ def init_db() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── STARTUP ──────────────────────────────────────────────────────────────
     print("[Startup] Initialising database …")
     init_db()
 
     print(f"[Startup] Loading model from: {MODEL_PATH}")
     if not os.path.exists(MODEL_PATH):
-        raise RuntimeError(
-            f"Model file not found at {MODEL_PATH}. "
-            "Place neykuri_model_v1.keras in the backend/ directory."
-        )
+        raise RuntimeError(f"Model file not found at {MODEL_PATH}.")
 
-    # Keras 3 (TF 2.16+) — import and load
-    import tensorflow as tf  # noqa: PLC0415
+    import tensorflow as tf
     print(f"[Startup] TensorFlow version : {tf.__version__}")
-
-    # compile=False — inference only, no need to restore optimizer state
     app_state["model"] = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    print("[Startup] Model loaded successfully. Server is ready.")
-    print(f"[Startup] Input shape  : {app_state['model'].input_shape}")
-    print(f"[Startup] Output shape : {app_state['model'].output_shape}")
+    print("[Startup] Model loaded. Server is ready.")
+    print(f"[Startup] Input  : {app_state['model'].input_shape}")
+    print(f"[Startup] Output : {app_state['model'].output_shape}")
 
-    yield  # ── application runs ─────────────────────────────────────────────
+    yield
 
-    # ── SHUTDOWN ─────────────────────────────────────────────────────────────
-    print("[Shutdown] Releasing model from memory …")
+    print("[Shutdown] Releasing model …")
     app_state["model"] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FASTAPI APPLICATION
+# APP
 # ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Neykuri Diagnostic API",
-    description="Edge AI urine-sample analyser — DenseNet121 backbone",
-    version="1.0.0",
+    description="Edge AI urine-sample analyser — DenseNet121 · Offline-first with Supabase sync",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINT: POST /analyze
+# POST /analyze
 # ─────────────────────────────────────────────────────────────────────────────
-@app.post("/analyze", summary="Analyse a urine-sample image")
+@app.post("/analyze")
 async def analyze(
     patient_id: str = Form(...),
     file: UploadFile = File(...),
@@ -129,49 +143,41 @@ async def analyze(
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded.")
 
-    # ── 1. Read uploaded file ─────────────────────────────────────────────
     contents = await file.read()
     if not contents:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        raise HTTPException(status_code=400, detail="Empty file.")
 
     try:
         pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Cannot read image: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Cannot read image: {exc}")
 
-    # ── 2. Save physical .jpg (SQLite stores path string only) ────────────
+    # Save physical jpg
     timestamp_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     safe_pid      = "".join(c if c.isalnum() or c in "-_" else "_" for c in patient_id)
     filename      = f"{safe_pid}_{timestamp_str}.jpg"
     save_path     = os.path.join(STORAGE_DIR, filename)
-
     os.makedirs(STORAGE_DIR, exist_ok=True)
     pil_image.save(save_path, format="JPEG", quality=90)
 
-    # ── 3. Preprocess ─────────────────────────────────────────────────────
-    # IMPORTANT: DenseNet's preprocess_input is built INSIDE the model graph.
-    # We only need to:
-    #   a) Resize to 224x224
-    #   b) Convert to float32
-    #   c) Keep pixel values in range 0–255  ← do NOT divide by 255
-    img_resized = pil_image.resize(IMG_SIZE, Image.LANCZOS)
-    img_array   = np.array(img_resized, dtype=np.float32)   # shape: (224, 224, 3)
-    img_batch   = np.expand_dims(img_array, axis=0)          # shape: (1, 224, 224, 3)
+    # Preprocess — DenseNet preprocessing is inside the model, pass raw 0-255
+    img_array = np.array(pil_image.resize(IMG_SIZE, Image.LANCZOS), dtype=np.float32)
+    img_batch = np.expand_dims(img_array, axis=0)
 
-    # ── 4. Inference ──────────────────────────────────────────────────────
-    predictions = model.predict(img_batch, verbose=0)        # shape: (1, 5)
+    # Inference
+    predictions = model.predict(img_batch, verbose=0)
     class_idx   = int(np.argmax(predictions[0]))
     confidence  = float(predictions[0][class_idx])
     label       = CLASS_NAMES[class_idx]
 
-    # ── 5. Persist metadata to SQLite ────────────────────────────────────
+    # Persist — is_synced defaults to 0 (pending cloud sync)
     conn = get_db()
     try:
         conn.execute(
             """
             INSERT INTO patient_records
-                (patient_id, timestamp, image_path, prediction, confidence)
-            VALUES (?, ?, ?, ?, ?)
+                (patient_id, timestamp, image_path, prediction, confidence, is_synced)
+            VALUES (?, ?, ?, ?, ?, 0)
             """,
             (patient_id, timestamp_str, save_path, label, confidence),
         )
@@ -185,19 +191,21 @@ async def analyze(
         "diagnosis":   label,
         "confidence":  round(confidence * 100, 2),
         "image_saved": save_path,
+        "is_synced":   False,
     })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINT: GET /history/{patient_id}
+# GET /history/{patient_id}
 # ─────────────────────────────────────────────────────────────────────────────
-@app.get("/history/{patient_id}", summary="Last 9 records for a patient")
+@app.get("/history/{patient_id}")
 def get_history(patient_id: str):
     conn = get_db()
     try:
         rows = conn.execute(
             """
-            SELECT record_id, patient_id, timestamp, image_path, prediction, confidence
+            SELECT record_id, patient_id, timestamp, image_path,
+                   prediction, confidence, is_synced
             FROM   patient_records
             WHERE  patient_id = ?
             ORDER  BY record_id DESC
@@ -209,10 +217,8 @@ def get_history(patient_id: str):
         conn.close()
 
     if not rows:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No records found for patient '{patient_id}'.",
-        )
+        raise HTTPException(status_code=404,
+                            detail=f"No records for '{patient_id}'.")
 
     return JSONResponse(status_code=200, content={
         "patient_id":    patient_id,
@@ -224,6 +230,7 @@ def get_history(patient_id: str):
                 "image_path": row["image_path"],
                 "prediction": row["prediction"],
                 "confidence": round(row["confidence"] * 100, 2),
+                "is_synced":  bool(row["is_synced"]),
             }
             for row in rows
         ],
@@ -231,16 +238,34 @@ def get_history(patient_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ENDPOINT: GET /health
+# GET /sync-status
 # ─────────────────────────────────────────────────────────────────────────────
-@app.get("/health", summary="Health probe")
+@app.get("/sync-status")
+def sync_status():
+    """Returns count of synced vs pending records — useful for monitoring."""
+    conn = get_db()
+    try:
+        total   = conn.execute("SELECT COUNT(*) FROM patient_records").fetchone()[0]
+        synced  = conn.execute("SELECT COUNT(*) FROM patient_records WHERE is_synced=1").fetchone()[0]
+        pending = total - synced
+    finally:
+        conn.close()
+
+    return {
+        "total_records":   total,
+        "synced_to_cloud": synced,
+        "pending_sync":    pending,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /health
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/health")
 def health_check():
     model_ready = app_state.get("model") is not None
     return {"status": "ok" if model_ready else "loading", "model_loaded": model_ready}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
