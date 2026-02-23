@@ -1,35 +1,62 @@
-# ─── Virtual Environments ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Neykuri v1 — .gitignore
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ─── Credentials — NEVER commit these ────────────────────────────────────────
+.env
+.env.local
+.env.production
+.env.staging
+backend/.env
+
+# ─── Virtual Environments ─────────────────────────────────────────────────────
 venv310/
 venv/
 .venv/
 env/
+ENV/
 
 # ─── Python Cache ─────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyo
+*.pyd
+.Python
 
-# ─── ML Model Files ──────────────────────────────────────────────────────────
+# ─── ML Model Files (too large for GitHub) ───────────────────────────────────
 *.h5
 *.keras
 *.tflite
 *.pb
 *.onnx
 *.savedmodel/
+*.pt
+*.pth
+*.bin
 
-# ─── Database Files ──────────────────────────────────────────────────────────
+# ─── Database Files ───────────────────────────────────────────────────────────
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+neykuri_database.db
+backend/neykuri_database.db
 
-# ─── Saved Sample Images (runtime data, not source) ─────────────────────────
+# ─── Saved Sample Images (runtime data) ──────────────────────────────────────
 storage/saved_samples/*.jpg
 storage/saved_samples/*.jpeg
 storage/saved_samples/*.png
+storage/saved_samples/*.webp
+# Keep the folder itself in git
+!storage/saved_samples/.gitkeep
 
-# ─── IDE & Editor ────────────────────────────────────────────────────────────
+# ─── Sync Log (auto-generated at runtime) ────────────────────────────────────
+*.log
+sync.log
+backend/sync.log
+
+# ─── IDE & Editor ─────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
@@ -37,20 +64,41 @@ storage/saved_samples/*.png
 *~
 .project
 .classpath
+*.sublime-project
+*.sublime-workspace
 
-# ─── OS Generated ────────────────────────────────────────────────────────────
+# ─── OS Generated ─────────────────────────────────────────────────────────────
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
 ._*
+.Spotlight-V100
+.Trashes
 
-# ─── Streamlit ───────────────────────────────────────────────────────────────
+# ─── Streamlit ────────────────────────────────────────────────────────────────
 .streamlit/
 
-# ─── Misc ────────────────────────────────────────────────────────────────────
-*.log
-*.csv
+# ─── Build & Distribution ─────────────────────────────────────────────────────
 *.egg-info/
 dist/
 build/
+*.egg
+MANIFEST
+*.whl
+
+# ─── Jupyter Notebooks (checkpoints) ──────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Coverage & Testing ───────────────────────────────────────────────────────
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.csv
+*.tmp
+*.bak
+*.orig
