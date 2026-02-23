@@ -1,0 +1,37 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Neykuri v1 — Backend Requirements
+# Matched exactly to the Colab training environment to avoid compatibility issues
+#
+# Key facts from neykuri_densenet121.ipynb:
+#   - Model trained with TensorFlow 2.16.x + standalone Keras 3
+#   - DenseNet121 preprocessing is BUILT INTO the model
+#     (tf.keras.applications.densenet.preprocess_input applied inside the graph)
+#   - Model saved in .keras format (Keras 3 native format)
+#   - Input: raw RGB images 224x224, pixel values 0–255 (NO manual scaling needed)
+#   - Output: 5-class softmax → [Kabam, Pithakabam, Pithalipitham, Pitham, Pithavatham]
+#
+# DO NOT downgrade to TF 2.13 or TF 2.15 — the .keras file will fail to load
+# DO NOT install keras separately — TF 2.16 pulls in Keras 3 automatically
+#
+# Install:
+#   pip install -r requirements_api.txt
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Web framework ──────────────────────────────────────────────────────────
+fastapi>=0.110.0,<0.120.0
+
+# ── ASGI server ────────────────────────────────────────────────────────────
+uvicorn[standard]>=0.29.0,<0.35.0
+
+# ── Required for FastAPI Form + UploadFile (multipart) ────────────────────
+python-multipart>=0.0.9,<0.1.0
+
+# ── ML — must match Colab training environment ────────────────────────────
+# TF 2.16.2 is what Colab used; Keras 3 is bundled automatically
+tensorflow==2.16.2
+
+# ── Image loading (resize to 224x224 before passing to model) ─────────────
+Pillow>=10.0.0,<11.0.0
+
+# ── Numerical ops ─────────────────────────────────────────────────────────
+numpy>=1.24.0,<2.0.0

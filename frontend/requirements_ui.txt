@@ -1,0 +1,21 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Neykuri v1 – Frontend (Streamlit) Dependencies
+# Target hardware : NVIDIA Jetson Nano 4GB  |  Ubuntu 20.04  |  Python 3.10
+#
+# CRITICAL – Hardware constraint enforced here:
+#   TensorFlow and Keras are intentionally ABSENT from this file.
+#   The frontend process must NEVER load the ML model.
+#   All inference is delegated to the FastAPI backend via HTTP (requests).
+#
+# Install:
+#   pip install -r requirements_ui.txt
+# ──────────────────────────────────────────────────────────────────────────────
+
+# UI framework
+streamlit>=1.33.0,<2.0.0
+
+# HTTP client — the ONLY way the frontend talks to the backend
+requests>=2.31.0,<3.0.0
+
+# Tabular display and charting (line chart, bar chart, dataframe)
+pandas>=2.0.0,<3.0.0
